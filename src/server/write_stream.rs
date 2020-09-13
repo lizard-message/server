@@ -1,7 +1,16 @@
+use async_native_tls;
+use tokio::io::{BufWriter, WriteHalf};
 use tokio::net::TcpStream;
-use tokio::io::ReadHalf;
 
 #[derive(Debug)]
-pub(super) struct ReadStream {
-    stream: ReadHalf<TcpStream>,
+pub(super) struct WriteStream {
+    stream: BufWriter<WriteHalf<TcpStream>>,
+}
+
+impl WriteStream {
+    pub(super) fn new(stream: WriteHalf<TcpStream>) -> Self {
+        Self {
+            stream: BufWriter::new(stream),
+        }
+    }
 }
