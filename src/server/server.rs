@@ -1,14 +1,13 @@
-use tokio::net::TcpListener;
-use std::net::{SocketAddr, AddrParseError};
-use std::str::FromStr;
-use std::io::{Error as IoError};
-use thiserror::Error;
-use actix::Handler;
+use super::service::Service;
 use crate::global_static::CONFIG;
+use std::io::Error as IoError;
+use std::net::{AddrParseError, SocketAddr};
+use thiserror::Error;
+use tokio::net::TcpListener;
+use tokio::spawn;
 
 #[derive(Debug, Error)]
 pub(crate) enum Error {
-
     #[error("Io error `{0}`")]
     Io(#[from] IoError),
 
@@ -30,11 +29,10 @@ impl Server {
         loop {
             match listener.accept().await {
                 Ok((socket, addr)) => {
-
-                },
-                Err(e) => {
-                    
+                    let service = Service::new(socket).await?;
+                    spawn(service.run());
                 }
+                Err(e) => {}
             }
         }
 
