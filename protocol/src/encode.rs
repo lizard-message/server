@@ -1,11 +1,7 @@
+use super::state::{ClientState, Support, STATE_SERVER_INFO};
+use bytes::{BufMut, BytesMut};
 use std::default::Default;
 use std::u32::MAX as u32_MAX;
-use super::state::{
-    ClientState,
-    Support,
-    STATE_SERVER_INFO,
-};
-use bytes::{BytesMut, BufMut};
 
 #[derive(Debug)]
 pub struct ServerConfig {

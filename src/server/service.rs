@@ -1,21 +1,16 @@
 use super::read_stream::{ReadStream, StreamType};
 use super::write_stream::WriteStream;
 use crate::global_static::CONFIG;
+use protocol::encode::ServerConfig;
+use std::io::Error as IoError;
 use thiserror::Error;
 use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use std::io::Error as IoError;
-use protocol::encode::{
-    ServerConfig,
-};
 
 #[derive(Debug, Error)]
 pub(super) enum Error {
-
     #[error("io error `{0}`")]
     Io(#[from] IoError),
-
-
 }
 
 #[derive(Debug)]
@@ -26,11 +21,9 @@ pub(super) struct Service {
 
 impl Service {
     pub(super) async fn new(stream: TcpStream) -> Result<Self, Error> {
-        
-
         let client_config = CONFIG.get_client_config();
         let mut server_config = ServerConfig::default();
-        
+
         if *client_config.get_support_push() {
             server_config.support_push();
         }

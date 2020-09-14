@@ -1,6 +1,6 @@
-use std::ops::{BitOrAssign, BitAnd};
-use std::convert::Into;
 use std::cmp::PartialEq;
+use std::convert::Into;
+use std::ops::{BitAnd, BitOrAssign};
 
 pub(crate) const STATE_SERVER_INFO: u8 = 0;
 pub(crate) const STATE_CLIENT_INFO: u8 = 1;
@@ -46,7 +46,6 @@ impl Into<u8> for ServerState {
 }
 
 impl PartialEq<u8> for ServerState {
-
     fn eq(&self, other: &u8) -> bool {
         *self == *other
     }
