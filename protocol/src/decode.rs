@@ -1,7 +1,7 @@
 use super::state::ServerState;
-// use futures::sink::Sink;
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::{Buf, BytesMut};
 use futures::stream::Stream;
+use std::convert::TryInto;
 use std::marker::Unpin;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -15,7 +15,11 @@ pub enum Error {
 
 #[derive(Debug)]
 pub enum Message {
-    Info(u8, u16),
+    Info(u8, u16, u8),
+    Ping,
+    Pong,
+    TurnPush,
+    TurnPull,
 }
 
 #[derive(Debug)]
@@ -31,6 +35,10 @@ impl Decode {
             state: None,
         }
     }
+
+    pub fn get_mut_buffer(&mut self) -> &mut BytesMut {
+        &mut self.buffer
+    }
 }
 
 impl Unpin for Decode {}
@@ -45,23 +53,27 @@ impl Stream for Decode {
             if !this.buffer.has_remaining() {
                 return Poll::Ready(None);
             } else {
-                if let Some(state) = this.state.as_mut() {
+                if let Some(state) = &this.state {
                     match state {
                         ServerState::ClientInfo => {
                             if this.buffer.len() > 3 {
+                                this.state = None;
                                 return Poll::Ready(Some(Ok(Message::Info(
                                     this.buffer.get_u8(),
                                     this.buffer.get_u16_le(),
+                                    this.buffer.get_u8(),
                                 ))));
                             } else {
                                 return Poll::Ready(None);
                             }
                         }
                         ServerState::Ping => {
-                            return Poll::Pending;
+                            this.state = None;
+                            return Poll::Ready(Some(Ok(Message::Ping)));
                         }
                         ServerState::Pong => {
-                            return Poll::Pending;
+                            this.state = None;
+                            return Poll::Ready(Some(Ok(Message::Pong)));
                         }
                         ServerState::Err => {
                             return Poll::Pending;
@@ -76,15 +88,20 @@ impl Stream for Decode {
                             return Poll::Pending;
                         }
                         ServerState::TurnPull => {
-                            return Poll::Pending;
+                            this.state = None;
+                            return Poll::Ready(Some(Ok(Message::TurnPull)));
                         }
                         ServerState::TurnPush => {
-                            return Poll::Pending;
+                            this.state = None;
+                            return Poll::Ready(Some(Ok(Message::TurnPush)));
                         }
                     }
                 } else {
-                    if ServerState::ClientInfo == this.buffer.get_u8() {
-                        this.state = Some(ServerState::ClientInfo);
+                    let byte = this.buffer.get_u8();
+
+                    match byte.try_into() {
+                        Ok(state) => this.state = Some(state),
+                        Err(e) => return Poll::Ready(Some(Err(Error::Parse))),
                     }
                 }
             }
