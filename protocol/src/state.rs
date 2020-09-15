@@ -1,5 +1,5 @@
 use std::cmp::PartialEq;
-use std::convert::Into;
+use std::convert::{Into, TryInto};
 use std::ops::{BitAnd, BitOrAssign};
 
 pub(crate) const STATE_SERVER_INFO: u8 = 0;
@@ -45,6 +45,25 @@ impl Into<u8> for ServerState {
     }
 }
 
+impl TryInto<ServerState> for u8 {
+    type Error = String;
+
+    fn try_into(self) -> Result<ServerState, Self::Error> {
+        match self {
+            STATE_CLIENT_INFO => Ok(ServerState::ClientInfo),
+            STATE_PING => Ok(ServerState::Ping),
+            STATE_PONG => Ok(ServerState::Pong),
+            STATE_MSG => Ok(ServerState::Msg),
+            STATE_OFFSET => Ok(ServerState::Offset),
+            STATE_ACK => Ok(ServerState::Ack),
+            STATE_ERR => Ok(ServerState::Err),
+            STATE_TURN_PULL => Ok(ServerState::TurnPull),
+            STATE_TURN_PUSH => Ok(ServerState::TurnPush),
+            _ => Err(String::from("server state error"))
+        }
+    }
+}
+
 impl PartialEq<u8> for ServerState {
     fn eq(&self, other: &u8) -> bool {
         *self == *other
@@ -83,13 +102,23 @@ pub(super) enum Support {
 
 impl BitOrAssign<Support> for u16 {
     fn bitor_assign(&mut self, rhs: Support) {
-        *self |= rhs;
+        match rhs {
+            Support::Push => (*self |= SUPPORT_PUSH),
+            Support::Pull => *self |= SUPPORT_PULL,
+            Support::Tls => *self |= SUPPORT_TLS,
+            Support::Compress => *self |= SUPPORT_COMPRESS,
+        }
     }
 }
 
 impl BitAnd<Support> for u16 {
     type Output = bool;
     fn bitand(self, rhs: Support) -> Self::Output {
-        self & rhs
+        match rhs {
+            Support::Push => (self & SUPPORT_PUSH) == SUPPORT_PUSH,
+            Support::Pull => (self & SUPPORT_PULL) == SUPPORT_PULL,
+            Support::Tls => (self & SUPPORT_TLS) == SUPPORT_TLS,
+            Support::Compress => (self & SUPPORT_COMPRESS) == SUPPORT_COMPRESS,
+        }
     }
 }
