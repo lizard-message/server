@@ -46,7 +46,7 @@ impl Into<u8> for ServerState {
 }
 
 impl TryInto<ServerState> for u8 {
-    type Error = String;
+    type Error = ();
 
     fn try_into(self) -> Result<ServerState, Self::Error> {
         match self {
@@ -59,7 +59,7 @@ impl TryInto<ServerState> for u8 {
             STATE_ERR => Ok(ServerState::Err),
             STATE_TURN_PULL => Ok(ServerState::TurnPull),
             STATE_TURN_PUSH => Ok(ServerState::TurnPush),
-            _ => Err(String::from("server state error"))
+            _ => Err(()),
         }
     }
 }
@@ -103,7 +103,7 @@ const SUPPORT_COMPRESS: u16 = 8;
 
 #[repr(u16)]
 #[derive(Debug)]
-pub(super) enum Support {
+pub enum Support {
     Push = SUPPORT_PUSH,
     Pull = SUPPORT_PULL,
     Tls = SUPPORT_TLS,

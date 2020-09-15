@@ -1,3 +1,3 @@
 pub mod decode;
 pub mod encode;
-mod state;
+pub mod state;
