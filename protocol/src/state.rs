@@ -66,7 +66,17 @@ impl TryInto<ServerState> for u8 {
 
 impl PartialEq<u8> for ServerState {
     fn eq(&self, other: &u8) -> bool {
-        *self == *other
+        match self {
+            Self::ClientInfo => STATE_CLIENT_INFO == *other,
+            Self::Ping => STATE_PING == *other,
+            Self::Pong => STATE_PONG == *other,
+            Self::Msg => STATE_MSG == *other,
+            Self::Offset => STATE_OFFSET == *other,
+            Self::Ack => STATE_ACK == *other,
+            Self::Err => STATE_ERR == *other,
+            Self::TurnPush => STATE_TURN_PUSH == *other,
+            Self::TurnPull => STATE_TURN_PULL == *other,
+        }
     }
 }
 
