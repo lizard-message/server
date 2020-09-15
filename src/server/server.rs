@@ -5,9 +5,10 @@ use std::net::{AddrParseError, SocketAddr};
 use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio::spawn;
+use log::error;
 
 #[derive(Debug, Error)]
-pub(crate) enum Error {
+pub enum Error {
     #[error("Io error `{0}`")]
     Io(#[from] IoError),
 
@@ -16,10 +17,10 @@ pub(crate) enum Error {
 }
 
 #[derive(Debug)]
-pub(crate) struct Server;
+pub struct Server;
 
 impl Server {
-    pub(crate) async fn run() -> Result<(), Error> {
+    pub async fn run() -> Result<(), Error> {
         let client = CONFIG.get_client_config();
         let host = client.get_host();
         let port = client.get_port();
@@ -29,13 +30,18 @@ impl Server {
         loop {
             match listener.accept().await {
                 Ok((socket, addr)) => {
-                    let service = Service::new(socket).await?;
-                    spawn(service.run());
+
+                    match Service::new(socket).await {
+                        Ok(service) => {
+                            spawn(service.run());
+                        }
+                        Err(e) => {
+                            error!("service error {:?}", e);
+                        }
+                    }
                 }
                 Err(e) => {}
             }
         }
-
-        Ok(())
     }
 }
