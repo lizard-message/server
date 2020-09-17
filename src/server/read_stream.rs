@@ -9,7 +9,7 @@ use tokio::net::TcpStream;
 
 #[derive(Debug)]
 pub(super) enum StreamType {
-    TLS(TlsStream<ReadHalf<TcpStream>>),
+    TLS(ReadHalf<TlsStream<TcpStream>>),
     Normal(ReadHalf<TcpStream>),
 }
 

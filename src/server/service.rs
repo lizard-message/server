@@ -10,6 +10,7 @@ use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use futures::stream::StreamExt;
 use log::{error, info};
+use async_native_tls::accept;
 
 #[derive(Debug, Error)]
 pub(super) enum Error {
@@ -74,12 +75,12 @@ impl Service {
                                 if let Message::Info(version, mask, max_message_size) = message {
 
                                     let mode = {
-                                        if mask & Support::Push && mask & Support::Pull {
+                                        if mask & Support::Push && mask & Support::Pull && *client_config.get_support_push() && *client_config.get_support_pull() {
                                             Mode::PushAndPull
                                         } else {
-                                            if mask & Support::Push {
+                                            if mask & Support::Push && *client_config.get_support_push() {
                                                 Mode::OnlyPush
-                                            } else if mask & Support::Pull {
+                                            } else if mask & Support::Pull && *client_config.get_support_pull() {
                                                 Mode::OnlyPull
                                             } else {
                                                 return Err(Error::HandShake);
@@ -87,7 +88,14 @@ impl Service {
                                         }
                                     };
 
-                                    let (mut read_stream, mut write_stream) = split(stream);
+                                    let (read_stream, write_stream) = {
+
+                                        if mask & Support::Tls && *client_config.get_support_tls() {
+                                            accept(, ,stream).await?;
+                                        } else {
+                                            split(stream)
+                                        }
+                                    };
                                     let mut read_stream = ReadStream::new(read_stream);
                                     let mut write_stream = WriteStream::new(wirte_stream);
 
