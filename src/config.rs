@@ -38,11 +38,11 @@ impl Config {
 pub struct Client {
     host: String,
     port: u16,
-    support_tls: bool,
     support_push: bool,
     support_pull: bool,
     support_compress: bool,
     max_message_length: u32,
+    tls_config: Option<TlsConfig>,
 }
 
 impl Client {
@@ -54,8 +54,8 @@ impl Client {
         &self.port
     }
 
-    pub fn get_support_tls(&self) -> &bool {
-        &self.support_tls
+    pub fn is_support_tls(&self) -> bool {
+        self.tls_config.is_some()
     }
 
     pub fn get_support_push(&self) -> &bool {
@@ -72,5 +72,25 @@ impl Client {
 
     pub fn get_max_message_length(&self) -> &u32 {
         &self.max_message_length
+    }
+
+    pub fn get_tls_config(&self) -> &Option<TlsConfig> {
+        &self.tls_config
+    }
+}
+
+#[derive(Deserialize)]
+pub struct TlsConfig {
+    identity_path: String,
+    ssl_password: String,
+}
+
+impl TlsConfig {
+    pub fn get_identity_path(&self) -> &String {
+        &self.identity_path
+    }
+
+    pub fn get_ssl_password(&self) -> &String {
+        &self.ssl_password
     }
 }
