@@ -1,5 +1,6 @@
 use super::read_stream::{ReadStream, StreamType as ReadStreamType};
 use super::write_stream::{StreamType as WriteStreamType, WriteStream};
+use crate::config::Client;
 use crate::global_static::CONFIG;
 use async_native_tls::{accept, AcceptError};
 use futures::stream::StreamExt;
@@ -43,7 +44,7 @@ pub(super) struct Service {
 }
 
 impl Service {
-    pub(super) async fn new(mut stream: TcpStream) -> Result<Self, Error> {
+    async fn hand_shake(mut stream: TcpStream, decode: &mut Decode) -> Result<Self, Error> {
         let client_config = CONFIG.get_client_config();
 
         let mut server_config = ServerConfig::default();
@@ -68,8 +69,6 @@ impl Service {
 
         stream.write(&server_config.encode().freeze()).await?;
 
-        let mut decode = Decode::new(*client_config.get_max_message_length() as usize);
-
         loop {
             match stream.read_buf(decode.get_mut_buffer()).await {
                 Ok(0) => {
@@ -80,79 +79,10 @@ impl Service {
                         match result {
                             Ok(message) => {
                                 if let Message::Info(version, mask, max_message_size) = message {
-                                    let mode = {
-                                        if mask & Support::Push
-                                            && mask & Support::Pull
-                                            && *client_config.get_support_push()
-                                            && *client_config.get_support_pull()
-                                        {
-                                            Mode::PushAndPull
-                                        } else {
-                                            if mask & Support::Push
-                                                && *client_config.get_support_push()
-                                            {
-                                                Mode::OnlyPush
-                                            } else if mask & Support::Pull
-                                                && *client_config.get_support_pull()
-                                            {
-                                                Mode::OnlyPull
-                                            } else {
-                                                return Err(Error::HandShake);
-                                            }
-                                        }
-                                    };
+                                    let mode = Self::select_mode(&mask, &client_config)?;
 
-                                    let (read_stream, write_stream) = {
-                                        if mask & Support::Tls && client_config.is_support_tls() {
-                                            if let Some(tls_config) =
-                                                client_config.get_tls_config().as_ref()
-                                            {
-                                                let key = File::open(
-                                                    tls_config.get_identity_path().clone(),
-                                                )
-                                                .await?;
-
-                                                let stream = accept(
-                                                    key,
-                                                    tls_config.get_ssl_password().clone(),
-                                                    stream,
-                                                )
-                                                .await?;
-
-                                                let (read_stream, write_stream) = split(stream);
-
-                                                (
-                                                    ReadStream::new(ReadStreamType::Tls(
-                                                        read_stream,
-                                                    )),
-                                                    WriteStream::new(WriteStreamType::Tls(
-                                                        write_stream,
-                                                    )),
-                                                )
-                                            } else {
-                                                let (read_stream, write_stream) = split(stream);
-                                                (
-                                                    ReadStream::new(ReadStreamType::Normal(
-                                                        read_stream,
-                                                    )),
-                                                    WriteStream::new(WriteStreamType::Normal(
-                                                        write_stream,
-                                                    )),
-                                                )
-                                            }
-                                        } else {
-                                            let (read_stream, write_stream) = split(stream);
-
-                                            (
-                                                ReadStream::new(ReadStreamType::Normal(
-                                                    read_stream,
-                                                )),
-                                                WriteStream::new(WriteStreamType::Normal(
-                                                    write_stream,
-                                                )),
-                                            )
-                                        }
-                                    };
+                                    let (read_stream, write_stream) =
+                                        Self::select_stream(stream, &mask, &client_config).await?;
 
                                     return Ok(Self {
                                         read_stream,
@@ -178,5 +108,71 @@ impl Service {
         }
     }
 
-    pub(super) async fn run(mut self) {}
+    /**
+     *  通过客户端功能信息与本地配置做比较,
+     *  匹配出最低能接受的模式
+     */
+    fn select_mode(mask: &u16, client_config: &Client) -> Result<Mode, Error> {
+        if *mask & Support::Push
+            && *mask & Support::Pull
+            && *client_config.get_support_push()
+            && *client_config.get_support_pull()
+        {
+            Ok(Mode::PushAndPull)
+        } else {
+            if *mask & Support::Push && *client_config.get_support_push() {
+                Ok(Mode::OnlyPush)
+            } else if *mask & Support::Pull && *client_config.get_support_pull() {
+                Ok(Mode::OnlyPull)
+            } else {
+                Err(Error::HandShake)
+            }
+        }
+    }
+
+    async fn select_stream(
+        stream: TcpStream,
+        mask: &u16,
+        client_config: &Client,
+    ) -> Result<(ReadStream, WriteStream), Error> {
+        if *mask & Support::Tls && client_config.is_support_tls() {
+            if let Some(tls_config) = client_config.get_tls_config().as_ref() {
+                let key = File::open(tls_config.get_identity_path().clone()).await?;
+
+                let stream = accept(key, tls_config.get_ssl_password().clone(), stream).await?;
+
+                let (read_stream, write_stream) = split(stream);
+
+                Ok((
+                    ReadStream::new(ReadStreamType::Tls(read_stream)),
+                    WriteStream::new(WriteStreamType::Tls(write_stream)),
+                ))
+            } else {
+                let (read_stream, write_stream) = split(stream);
+                Ok((
+                    ReadStream::new(ReadStreamType::Normal(read_stream)),
+                    WriteStream::new(WriteStreamType::Normal(write_stream)),
+                ))
+            }
+        } else {
+            let (read_stream, write_stream) = split(stream);
+
+            Ok((
+                ReadStream::new(ReadStreamType::Normal(read_stream)),
+                WriteStream::new(WriteStreamType::Normal(write_stream)),
+            ))
+        }
+    }
+
+    pub(super) async fn run(stream: TcpStream) {
+        let client_config = CONFIG.get_client_config();
+        let mut decode = Decode::new(*client_config.get_max_message_length() as usize);
+
+        match Self::hand_shake(stream, &mut decode).await {
+            Ok(mut serivce) => {}
+            Err(e) => {
+                error!("error {:?}", e);
+            }
+        }
+    }
 }

@@ -1,11 +1,11 @@
 use super::service::Service;
 use crate::global_static::CONFIG;
+use log::error;
 use std::io::Error as IoError;
 use std::net::{AddrParseError, SocketAddr};
 use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio::spawn;
-use log::error;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -30,17 +30,11 @@ impl Server {
         loop {
             match listener.accept().await {
                 Ok((socket, addr)) => {
-
-                    match Service::new(socket).await {
-                        Ok(service) => {
-                            spawn(service.run());
-                        }
-                        Err(e) => {
-                            error!("service error {:?}", e);
-                        }
-                    }
+                    spawn(Service::run(socket));
                 }
-                Err(e) => {}
+                Err(e) => {
+                    error!("tcp listen accept error {:?}", e);
+                }
             }
         }
     }
