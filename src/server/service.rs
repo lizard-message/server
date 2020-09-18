@@ -4,7 +4,7 @@ use crate::config::Client;
 use crate::global_static::CONFIG;
 use async_native_tls::{accept, AcceptError};
 use futures::stream::StreamExt;
-use log::{error, info};
+use log::{error};
 use protocol::decode::{Decode, Error as DecodeError, Message};
 use protocol::encode::ServerConfig;
 use protocol::state::Support;
@@ -77,7 +77,7 @@ impl Service {
                 Ok(_) => {
                     if let Some(result) = decode.next().await {
                         let message = result?;
-                        if let Message::Info(version, mask, max_message_size) = message {
+                        if let Message::Info(_version, mask, _max_message_size) = message {
                             let mode = Self::select_mode(&mask, &client_config)?;
 
                             let (read_stream, write_stream) =
@@ -161,7 +161,18 @@ impl Service {
         let mut decode = Decode::new(*client_config.get_max_message_length() as usize);
 
         match Self::hand_shake(stream, &mut decode).await {
-            Ok(mut serivce) => {}
+            Ok(mut service) => {
+                'main: loop {
+                    match service.read_stream.read_buf(decode.get_mut_buffer()).await {
+                        Ok(0) => break 'main,
+                        Ok(_) => {
+                        }
+                        Err(e) => {
+                            error!("read buff error {:?}", e);
+                        }
+                    }
+                }
+            }
             Err(e) => {
                 error!("error {:?}", e);
             }
