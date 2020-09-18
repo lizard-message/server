@@ -1,16 +1,17 @@
-use super::read_stream::{ReadStream, StreamType};
-use super::write_stream::WriteStream;
+use super::read_stream::{ReadStream, StreamType as ReadStreamType};
+use super::write_stream::{StreamType as WriteStreamType, WriteStream};
 use crate::global_static::CONFIG;
-use protocol::encode::ServerConfig;
+use async_native_tls::{accept, AcceptError};
+use futures::stream::StreamExt;
+use log::{error, info};
 use protocol::decode::{Decode, Error as DecodeError, Message};
+use protocol::encode::ServerConfig;
 use protocol::state::Support;
 use std::io::Error as IoError;
 use thiserror::Error;
+use tokio::fs::File;
 use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use futures::stream::StreamExt;
-use log::{error, info};
-use async_native_tls::accept;
 
 #[derive(Debug, Error)]
 pub(super) enum Error {
@@ -19,6 +20,12 @@ pub(super) enum Error {
 
     #[error("hand shake error")]
     HandShake,
+
+    #[error("tls accept error `{0}`")]
+    Tls(#[from] AcceptError),
+
+    #[error("decode error `{0}`")]
+    Decode(#[from] DecodeError),
 }
 
 #[derive(Debug)]
@@ -36,9 +43,9 @@ pub(super) struct Service {
 }
 
 impl Service {
-    pub(super) async fn new(stream: TcpStream) -> Result<Self, Error> {
+    pub(super) async fn new(mut stream: TcpStream) -> Result<Self, Error> {
         let client_config = CONFIG.get_client_config();
-        
+
         let mut server_config = ServerConfig::default();
 
         if *client_config.get_support_push() {
@@ -49,7 +56,7 @@ impl Service {
             server_config.support_pull();
         }
 
-        if *client_config.get_support_tls() {
+        if client_config.is_support_tls() {
             server_config.support_tls();
         }
 
@@ -67,20 +74,27 @@ impl Service {
             match stream.read_buf(decode.get_mut_buffer()).await {
                 Ok(0) => {
                     return Err(Error::HandShake);
-                },
+                }
                 Ok(_) => {
                     if let Some(result) = decode.next().await {
                         match result {
                             Ok(message) => {
                                 if let Message::Info(version, mask, max_message_size) = message {
-
                                     let mode = {
-                                        if mask & Support::Push && mask & Support::Pull && *client_config.get_support_push() && *client_config.get_support_pull() {
+                                        if mask & Support::Push
+                                            && mask & Support::Pull
+                                            && *client_config.get_support_push()
+                                            && *client_config.get_support_pull()
+                                        {
                                             Mode::PushAndPull
                                         } else {
-                                            if mask & Support::Push && *client_config.get_support_push() {
+                                            if mask & Support::Push
+                                                && *client_config.get_support_push()
+                                            {
                                                 Mode::OnlyPush
-                                            } else if mask & Support::Pull && *client_config.get_support_pull() {
+                                            } else if mask & Support::Pull
+                                                && *client_config.get_support_pull()
+                                            {
                                                 Mode::OnlyPull
                                             } else {
                                                 return Err(Error::HandShake);
@@ -89,15 +103,56 @@ impl Service {
                                     };
 
                                     let (read_stream, write_stream) = {
+                                        if mask & Support::Tls && client_config.is_support_tls() {
+                                            if let Some(tls_config) =
+                                                client_config.get_tls_config().as_ref()
+                                            {
+                                                let key = File::open(
+                                                    tls_config.get_identity_path().clone(),
+                                                )
+                                                .await?;
 
-                                        if mask & Support::Tls && *client_config.get_support_tls() {
-                                            accept(, ,stream).await?;
+                                                let stream = accept(
+                                                    key,
+                                                    tls_config.get_ssl_password().clone(),
+                                                    stream,
+                                                )
+                                                .await?;
+
+                                                let (read_stream, write_stream) = split(stream);
+
+                                                (
+                                                    ReadStream::new(ReadStreamType::Tls(
+                                                        read_stream,
+                                                    )),
+                                                    WriteStream::new(WriteStreamType::Tls(
+                                                        write_stream,
+                                                    )),
+                                                )
+                                            } else {
+                                                let (read_stream, write_stream) = split(stream);
+                                                (
+                                                    ReadStream::new(ReadStreamType::Normal(
+                                                        read_stream,
+                                                    )),
+                                                    WriteStream::new(WriteStreamType::Normal(
+                                                        write_stream,
+                                                    )),
+                                                )
+                                            }
                                         } else {
-                                            split(stream)
+                                            let (read_stream, write_stream) = split(stream);
+
+                                            (
+                                                ReadStream::new(ReadStreamType::Normal(
+                                                    read_stream,
+                                                )),
+                                                WriteStream::new(WriteStreamType::Normal(
+                                                    write_stream,
+                                                )),
+                                            )
                                         }
                                     };
-                                    let mut read_stream = ReadStream::new(read_stream);
-                                    let mut write_stream = WriteStream::new(wirte_stream);
 
                                     return Ok(Self {
                                         read_stream,
@@ -109,7 +164,7 @@ impl Service {
                                 }
                             }
                             Err(e) => {
-                                return Err(e);
+                                return Err(e.into());
                             }
                         }
                     } else {

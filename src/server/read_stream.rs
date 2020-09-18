@@ -9,7 +9,7 @@ use tokio::net::TcpStream;
 
 #[derive(Debug)]
 pub(super) enum StreamType {
-    TLS(ReadHalf<TlsStream<TcpStream>>),
+    Tls(ReadHalf<TlsStream<TcpStream>>),
     Normal(ReadHalf<TcpStream>),
 }
 
@@ -21,7 +21,11 @@ impl AsyncRead for StreamType {
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<IoResult<usize>> {
-        self.poll_read(cx, buf)
+        let mut this = self.get_mut();
+        match this {
+            Self::Tls(stream) => Pin::new(stream).poll_read(cx, buf),
+            Self::Normal(stream) => Pin::new(stream).poll_read(cx, buf),
+        }
     }
 }
 
