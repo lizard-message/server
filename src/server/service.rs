@@ -76,26 +76,20 @@ impl Service {
                 }
                 Ok(_) => {
                     if let Some(result) = decode.next().await {
-                        match result {
-                            Ok(message) => {
-                                if let Message::Info(version, mask, max_message_size) = message {
-                                    let mode = Self::select_mode(&mask, &client_config)?;
+                        let message = result?;
+                        if let Message::Info(version, mask, max_message_size) = message {
+                            let mode = Self::select_mode(&mask, &client_config)?;
 
-                                    let (read_stream, write_stream) =
-                                        Self::select_stream(stream, &mask, &client_config).await?;
+                            let (read_stream, write_stream) =
+                                Self::select_stream(stream, &mask, &client_config).await?;
 
-                                    return Ok(Self {
-                                        read_stream,
-                                        write_stream,
-                                        mode,
-                                    });
-                                } else {
-                                    error!("message error: not client info in hand shake");
-                                }
-                            }
-                            Err(e) => {
-                                return Err(e.into());
-                            }
+                            return Ok(Self {
+                                read_stream,
+                                write_stream,
+                                mode,
+                            });
+                        } else {
+                            return Err(Error::HandShake);
                         }
                     } else {
                         continue;
@@ -119,14 +113,12 @@ impl Service {
             && *client_config.get_support_pull()
         {
             Ok(Mode::PushAndPull)
+        } else if *mask & Support::Push && *client_config.get_support_push() {
+            Ok(Mode::OnlyPush)
+        } else if *mask & Support::Pull && *client_config.get_support_pull() {
+            Ok(Mode::OnlyPull)
         } else {
-            if *mask & Support::Push && *client_config.get_support_push() {
-                Ok(Mode::OnlyPush)
-            } else if *mask & Support::Pull && *client_config.get_support_pull() {
-                Ok(Mode::OnlyPull)
-            } else {
-                Err(Error::HandShake)
-            }
+            Err(Error::HandShake)
         }
     }
 
