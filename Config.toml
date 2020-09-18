@@ -1,4 +1,8 @@
 [client]
 host = "127.0.0.1"
 port = 8899
-enable_ssl = false
+support_push = true
+support_pull = true
+support_compress = false
+max_message_length = 1024
+
