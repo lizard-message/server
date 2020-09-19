@@ -41,3 +41,13 @@ impl ReadStream {
         }
     }
 }
+
+impl AsyncRead for ReadStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<IoResult<usize>> {
+        Pin::new(&mut self.get_mut().stream).poll_read(cx, buf)
+    }
+}
