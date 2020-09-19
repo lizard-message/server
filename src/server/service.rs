@@ -4,11 +4,12 @@ use crate::config::Client;
 use crate::global_static::CONFIG;
 use async_native_tls::{accept, AcceptError};
 use futures::stream::StreamExt;
-use log::{error};
+use log::error;
 use protocol::decode::{Decode, Error as DecodeError, Message};
 use protocol::encode::ServerConfig;
 use protocol::state::Support;
 use std::io::Error as IoError;
+use std::iter::Iterator;
 use thiserror::Error;
 use tokio::fs::File;
 use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
@@ -75,7 +76,7 @@ impl Service {
                     return Err(Error::HandShake);
                 }
                 Ok(_) => {
-                    if let Some(result) = decode.next().await {
+                    if let Some(result) = decode.iter().next() {
                         let message = result?;
                         if let Message::Info(_version, mask, _max_message_size) = message {
                             let mode = Self::select_mode(&mask, &client_config)?;
@@ -158,21 +159,22 @@ impl Service {
 
     pub(super) async fn run(stream: TcpStream) {
         let client_config = CONFIG.get_client_config();
+        let mut buff = vec![0u8; *client_config.get_max_message_length() as usize];
         let mut decode = Decode::new(*client_config.get_max_message_length() as usize);
 
         match Self::hand_shake(stream, &mut decode).await {
-            Ok(mut service) => {
-                'main: loop {
-                    match service.read_stream.read_buf(decode.get_mut_buffer()).await {
-                        Ok(0) => break 'main,
-                        Ok(_) => {
-                        }
-                        Err(e) => {
-                            error!("read buff error {:?}", e);
-                        }
+            Ok(mut service) => 'main: loop {
+                match service.read_stream.read(&mut buff).await {
+                    Ok(0) => break 'main,
+                    Ok(_) => {
+                        decode.set_buff(&buff);
+                        for message in decode.iter() {}
+                    }
+                    Err(e) => {
+                        error!("read buff error {:?}", e);
                     }
                 }
-            }
+            },
             Err(e) => {
                 error!("error {:?}", e);
             }
