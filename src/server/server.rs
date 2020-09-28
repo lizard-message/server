@@ -1,6 +1,6 @@
 use super::service::Service;
 use crate::global_static::CONFIG;
-use log::error;
+use log::{debug, error};
 use std::io::Error as IoError;
 use std::net::{AddrParseError, SocketAddr};
 use thiserror::Error;
@@ -30,6 +30,7 @@ impl Server {
         loop {
             match listener.accept().await {
                 Ok((socket, addr)) => {
+                    debug!("ip {:?} connect", addr);
                     spawn(Service::run(socket));
                 }
                 Err(e) => {

@@ -4,7 +4,7 @@ use crate::config::Client;
 use crate::global_static::CONFIG;
 use async_native_tls::{accept, AcceptError};
 use futures::stream::StreamExt;
-use log::error;
+use log::{debug, error};
 use protocol::send_to_client::{
     decode::{Decode, Error as DecodeError, Message},
     encode::{Ping, Pong, ServerConfig},
@@ -36,6 +36,24 @@ enum Mode {
     OnlyPush,
     OnlyPull,
     PushAndPull,
+}
+
+impl Mode {
+    fn can_push(&self) -> bool {
+        match self {
+            Self::OnlyPull => false,
+            Self::OnlyPush => true,
+            Self::PushAndPull => true,
+        }
+    }
+
+    fn can_pull(&self) -> bool {
+        match self {
+            Self::OnlyPull => true,
+            Self::OnlyPush => false,
+            Self::PushAndPull => true,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -158,7 +176,11 @@ impl Service {
         }
     }
 
-    pub(super) async fn run(stream: TcpStream) {
+    pub(super) async fn run(mut stream: TcpStream) {
+        if let Err(e) = stream.set_nodelay(true) {
+            error!("stream set nodelay error because {}", e);
+        }
+
         let client_config = CONFIG.get_client_config();
         let mut decode = Decode::new(*client_config.get_max_message_length() as usize);
 
@@ -176,8 +198,16 @@ impl Service {
                                     Message::Pong => {
                                         service.write_stream.write(Ping::encode()).await;
                                     }
-                                    Message::TurnPull => {}
-                                    Message::TurnPush => {}
+                                    Message::TurnPull => {
+                                        if service.mode.can_pull() {
+                                        } else {
+                                        }
+                                    }
+                                    Message::TurnPush => {
+                                        if service.mode.can_push() {
+                                        } else {
+                                        }
+                                    }
                                     _ => {}
                                 },
                                 Err(e) => {
