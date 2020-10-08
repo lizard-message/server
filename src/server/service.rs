@@ -3,11 +3,12 @@ use super::write_stream::{StreamType as WriteStreamType, WriteStream};
 use crate::config::Client;
 use crate::global_static::CONFIG;
 use async_native_tls::{accept, AcceptError};
+use futures::future::FusedFuture;
 use futures::stream::StreamExt;
 use log::{debug, error};
 use protocol::send_to_client::{
     decode::{Decode, Error as DecodeError, Message},
-    encode::{Ping, Pong, ServerConfig},
+    encode::{Err, Ok, Ping, Pong, ServerConfig},
 };
 use protocol::state::Support;
 use std::io::Error as IoError;
@@ -97,7 +98,12 @@ impl Service {
                 Ok(_) => {
                     if let Some(result) = decode.iter().next() {
                         let message = result?;
-                        if let Message::Info(_version, mask, _max_message_size) = message {
+                        if let Message::Info {
+                            version: _version,
+                            support: mask,
+                            max_message_size: _max_message_size,
+                        } = message
+                        {
                             let mode = Self::select_mode(&mask, &client_config)?;
 
                             let (read_stream, write_stream) =
@@ -191,25 +197,11 @@ impl Service {
                     Ok(_) => {
                         for result in decode.iter() {
                             match result {
-                                Ok(message) => match message {
-                                    Message::Ping => {
-                                        service.write_stream.write(Pong::encode()).await;
+                                Ok(message) => {
+                                    if let Err(e) = service.match_message(message).await {
+                                        error!("{:?}", e);
                                     }
-                                    Message::Pong => {
-                                        service.write_stream.write(Ping::encode()).await;
-                                    }
-                                    Message::TurnPull => {
-                                        if service.mode.can_pull() {
-                                        } else {
-                                        }
-                                    }
-                                    Message::TurnPush => {
-                                        if service.mode.can_push() {
-                                        } else {
-                                        }
-                                    }
-                                    _ => {}
-                                },
+                                }
                                 Err(e) => {
                                     error!("parse error {:?}", e);
                                 }
@@ -225,5 +217,40 @@ impl Service {
                 error!("error {:?}", e);
             }
         }
+    }
+
+    // 匹配消息, 然后做对应的动作
+    async fn match_message(&mut self, message: Message) -> Result<(), IoError> {
+        debug!("message {:?}", message);
+        match message {
+            Message::Ping => {
+                self.write_stream.write(Pong::encode()).await?;
+                self.write_stream.flush().await?;
+            }
+            Message::Pong => {
+                self.write_stream.write(Ping::encode()).await?;
+                self.write_stream.flush().await?;
+            }
+            Message::TurnPull => {
+                if self.mode.can_pull() {
+                    self.write_stream.write(Ok::encode()).await?;
+                } else {
+                    self.write_stream
+                        .write(&(Err::new("server not support pull").encode()))
+                        .await?;
+                }
+            }
+            Message::TurnPush => {
+                if self.mode.can_push() {
+                    self.write_stream.write(Ok::encode()).await?;
+                } else {
+                    self.write_stream
+                        .write(&(Err::new("server not support push").encode()))
+                        .await?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 }
