@@ -12,10 +12,12 @@ use protocol::send_to_client::{
 };
 use protocol::state::Support;
 use std::io::Error as IoError;
+use std::sync::Arc;
 use thiserror::Error;
 use tokio::fs::File;
 use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::sync::Mutex;
 
 #[derive(Debug, Error)]
 pub(super) enum Error {
@@ -60,7 +62,7 @@ impl Mode {
 #[derive(Debug)]
 pub(super) struct Service {
     read_stream: ReadStream,
-    write_stream: WriteStream,
+    write_stream: Arc<Mutex<WriteStream>>,
     mode: Mode,
 }
 
@@ -111,7 +113,7 @@ impl Service {
 
                             return Ok(Self {
                                 read_stream,
-                                write_stream,
+                                write_stream: Arc::new(Mutex::new(write_stream)),
                                 mode,
                             });
                         } else {
@@ -224,33 +226,73 @@ impl Service {
         debug!("message {:?}", message);
         match message {
             Message::Ping => {
-                self.write_stream.write(Pong::encode()).await?;
-                self.write_stream.flush().await?;
+                return self.send_pong().await;
             }
             Message::Pong => {
-                self.write_stream.write(Ping::encode()).await?;
-                self.write_stream.flush().await?;
+                return self.send_ping().await;
             }
             Message::TurnPull => {
-                if self.mode.can_pull() {
-                    self.write_stream.write(Ok::encode()).await?;
-                } else {
-                    self.write_stream
-                        .write(&(Err::new("server not support pull").encode()))
-                        .await?;
-                }
+                return self.send_turn_pull().await;
             }
             Message::TurnPush => {
-                if self.mode.can_push() {
-                    self.write_stream.write(Ok::encode()).await?;
-                } else {
-                    self.write_stream
-                        .write(&(Err::new("server not support push").encode()))
-                        .await?;
-                }
+                return self.send_turn_push().await;
+            }
+            Message::Sub { name, reply } => {
+                self.add_subscribe().await;
             }
             _ => {}
         }
         Ok(())
     }
+
+    // 发送pong消息
+    async fn send_pong(&mut self) -> Result<(), IoError> {
+        let mut stream = self.write_stream.lock().await;
+        stream.write(Pong::encode()).await?;
+        stream.flush().await?;
+        Ok(())
+    }
+
+    // 发送ping消息
+    async fn send_ping(&mut self) -> Result<(), IoError> {
+        let mut stream = self.write_stream.lock().await;
+        stream.write(Ping::encode()).await?;
+        stream.flush().await?;
+        Ok(())
+    }
+
+    // 发送转换pull消息
+    async fn send_turn_pull(&mut self) -> Result<(), IoError> {
+        let mut stream = self.write_stream.lock().await;
+        if self.mode.can_pull() {
+            stream.write(Ok::encode()).await?;
+        } else {
+            stream
+                .write(&(Err::new("server not support pull").encode()))
+                .await?;
+        }
+
+        // 立刻发送
+        stream.flush().await?;
+        Ok(())
+    }
+
+    //发送转换push消息
+    async fn send_turn_push(&mut self) -> Result<(), IoError> {
+        let mut stream = self.write_stream.lock().await;
+        if self.mode.can_push() {
+            stream.write(Ok::encode()).await?;
+        } else {
+            stream
+                .write(&(Err::new("server not support push").encode()))
+                .await?;
+        }
+
+        // 立刻发送
+        stream.flush().await?;
+        Ok(())
+    }
+
+    // 添加订阅
+    async fn add_subscribe(&mut self) {}
 }
