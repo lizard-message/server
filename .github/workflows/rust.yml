@@ -15,14 +15,27 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v2
+    - name: Checkout repository  
+      uses: actions/checkout@v2
+    
+    # 跑检查
     - name: Run clippy
       run: cargo clippy
 
-    - uses: actions/cache@v2
+    # 缓存依赖
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v2
       with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        name: lizard_server_dep
+        path: ./target/debug/deps
+  
+  deploy:
+    if: github.event_name == 'push'
+    needs: clippy
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download artifacts
+      uses: actions/download-artifact@v2
+      with:
+        name: lizard_server_dep
+
