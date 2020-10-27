@@ -1,0 +1,41 @@
+name: Rust
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  clippy:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository  
+      uses: actions/checkout@v2
+    
+    # 跑检查
+    - name: Run clippy
+      run: cargo clippy
+
+    # 缓存依赖
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v2
+      with:
+        name: lizard_server_dep
+        path: ./target/debug/deps
+  
+  deploy:
+    if: github.event_name == 'push'
+    needs: clippy
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download artifacts
+      uses: actions/download-artifact@v2
+      with:
+        name: lizard_server_dep
+

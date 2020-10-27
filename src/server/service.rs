@@ -11,7 +11,9 @@ use protocol::send_to_client::{
     encode::{Err, Ok, Ping, Pong, ServerConfig},
 };
 use protocol::state::Support;
+use radix_trie::Trie;
 use std::io::Error as IoError;
+use std::string::FromUtf8Error;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::fs::File;
@@ -32,6 +34,9 @@ pub(super) enum Error {
 
     #[error("decode error `{0}`")]
     Decode(#[from] DecodeError),
+
+    #[error("bytes convert to utf8 error `{0}`")]
+    Utf8(#[from] FromUtf8Error),
 }
 
 #[derive(Debug)]
@@ -59,15 +64,23 @@ impl Mode {
     }
 }
 
+type ArcWriteStream = Arc<Mutex<WriteStream>>;
+type ArcShareTrie = Arc<Mutex<Trie<String, ArcWriteStream>>>;
+
 #[derive(Debug)]
 pub(super) struct Service {
     read_stream: ReadStream,
-    write_stream: Arc<Mutex<WriteStream>>,
+    write_stream: ArcWriteStream,
     mode: Mode,
+    share_trie: ArcShareTrie,
 }
 
 impl Service {
-    async fn hand_shake(mut stream: TcpStream, decode: &mut Decode) -> Result<Self, Error> {
+    async fn hand_shake(
+        mut stream: TcpStream,
+        decode: &mut Decode,
+        share_trie: ArcShareTrie,
+    ) -> Result<Self, Error> {
         let client_config = CONFIG.get_client_config();
 
         let mut server_config = ServerConfig::default();
@@ -115,6 +128,7 @@ impl Service {
                                 read_stream,
                                 write_stream: Arc::new(Mutex::new(write_stream)),
                                 mode,
+                                share_trie,
                             });
                         } else {
                             return Err(Error::HandShake);
@@ -187,7 +201,7 @@ impl Service {
         }
     }
 
-    pub(super) async fn run(mut stream: TcpStream) {
+    pub(super) async fn run(mut stream: TcpStream, share_trie: ArcShareTrie) {
         if let Err(e) = stream.set_nodelay(true) {
             error!("stream set nodelay error because {}", e);
         }
@@ -195,7 +209,7 @@ impl Service {
         let client_config = CONFIG.get_client_config();
         let mut decode = Decode::new(*client_config.get_max_message_length() as usize);
 
-        match Self::hand_shake(stream, &mut decode).await {
+        match Self::hand_shake(stream, &mut decode, share_trie).await {
             Ok(mut service) => 'main: loop {
                 match service.read_stream.read_buf(decode.get_mut_buffer()).await {
                     Ok(0) => break 'main,
@@ -229,23 +243,24 @@ impl Service {
      *  短消息需要调用flush方法, 因为使用了BuffWrite, 有可能会缓存了一定的消息而没有发出去
      *  特别是对于心跳的消息, 需要一定的实时
      */
-    async fn match_message(&mut self, message: Message) -> Result<(), IoError> {
+    async fn match_message(&mut self, message: Message) -> Result<(), Error> {
         debug!("message {:?}", message);
         match message {
             Message::Ping => {
-                return self.send_pong().await;
+                self.send_pong().await?;
             }
             Message::Pong => {
-                return self.send_ping().await;
+                self.send_ping().await?;
             }
             Message::TurnPull => {
-                return self.send_turn_pull().await;
+                self.send_turn_pull().await?;
             }
             Message::TurnPush => {
-                return self.send_turn_push().await;
+                self.send_turn_push().await?;
             }
             Message::Sub { name, reply } => {
-                self.add_subscribe().await;
+                let sub_name = String::from_utf8(name.to_vec())?;
+                self.add_subscribe(sub_name, reply).await;
             }
             _ => {}
         }
@@ -301,5 +316,11 @@ impl Service {
     }
 
     // 添加订阅
-    async fn add_subscribe(&mut self) {}
+    // 暂时只能使用完整的匹配语句, 没有做匹配规则
+    async fn add_subscribe(&mut self, sub_name: String, reply: bool) {
+        let mut share_trie = self.share_trie.lock().await;
+
+        let stream = Arc::clone(&self.write_stream);
+        share_trie.insert(sub_name, stream);
+    }
 }
