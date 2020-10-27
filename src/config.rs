@@ -13,7 +13,7 @@ pub enum Error {
     TomlDeserialize(#[from] TomlError),
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct Config {
     client: Client,
 }
@@ -34,7 +34,7 @@ impl Config {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct Client {
     host: String,
     port: u16,
@@ -79,7 +79,7 @@ impl Client {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub struct TlsConfig {
     identity_path: String,
     ssl_password: String,
