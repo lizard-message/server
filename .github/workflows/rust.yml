@@ -15,7 +15,8 @@ jobs:
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     needs: clippy
     runs-on: ubuntu-latest
-   steps:
+  
+    steps:
     - name: Download artifacts
      uses: actions/download-artifact@v2
      with:
