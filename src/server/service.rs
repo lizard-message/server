@@ -109,16 +109,12 @@ impl Service {
                 Ok(_) => {
                     if let Some(result) = decode.iter().next() {
                         let message = result?;
-                        if let Message::Info {
-                            version: _version,
-                            support: mask,
-                            max_message_size: _max_message_size,
-                        } = message
+                        if let Message::Info(info) = message
                         {
-                            let mode = Self::select_mode(&mask, &client_config)?;
+                            let mode = Self::select_mode(&info.support, &client_config)?;
 
                             let (read_stream, write_stream) =
-                                Self::select_stream(stream, &mask, &client_config).await?;
+                                Self::select_stream(stream, &info.support, &client_config).await?;
 
                             return Ok(Self {
                                 read_stream,
@@ -247,9 +243,13 @@ impl Service {
             Message::TurnPush => {
                 self.send_turn_push().await?;
             }
-            Message::Sub { name, reply } => {
-                let sub_name = String::from_utf8(name.to_vec())?;
-                self.add_subscribe(sub_name, reply).await;
+            Message::Sub(sub) => {
+                let sub_name = String::from_utf8(sub.name.to_vec())?;
+                self.add_subscribe(sub_name, sub.reply).await;
+            }
+            Message::Pub(r#pub) => {
+                let sub_name = String::from_utf8(r#pub.name.to_vec())?;
+
             }
             _ => {}
         }
@@ -311,5 +311,11 @@ impl Service {
 
         let stream = Arc::clone(&self.write_stream);
         share_trie.insert(sub_name, stream);
+    }
+
+    async fn pushlish(&mut self, sub_name: String, msg: &[u8]) {
+        let mut share_trie = self.share_trie.lock().await;
+
+        
     }
 }
