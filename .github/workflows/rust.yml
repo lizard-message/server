@@ -47,4 +47,5 @@ jobs:
       with:
         name: lizard_server_dep
         path: ./target/debug/deps
+        retention-days: 3 
   
