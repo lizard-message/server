@@ -12,7 +12,13 @@ use protocol::send_to_client::{
 };
 use protocol::state::Support;
 use std::io::Error as IoError;
-use std::sync::Arc;
+use std::sync::{
+  Arc,
+  atomic::{
+      AtomicPtr,
+      Ordering,
+  }
+};
 use thiserror::Error;
 use tokio::fs::File;
 use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
@@ -20,6 +26,8 @@ use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use radix_trie::Trie;
 use std::string::FromUtf8Error;
+use tokio::spawn;
+use bytes::BytesMut;
 
 #[derive(Debug, Error)]
 pub(super) enum Error {
@@ -65,7 +73,7 @@ impl Mode {
 }
 
 type ArcWriteStream = Arc<Mutex<WriteStream>>;
-type ArcShareTrie = Arc<Mutex<Trie<String, ArcWriteStream>>>;
+type ArcShareTrie = Arc<Mutex<Trie<String, Vec<ArcWriteStream>>>>;
 
 #[derive(Debug)]
 pub(super) struct Service {
@@ -249,7 +257,7 @@ impl Service {
             }
             Message::Pub(r#pub) => {
                 let sub_name = String::from_utf8(r#pub.name.to_vec())?;
-
+                self.pushlish(sub_name, r#pub.msg).await;
             }
             _ => {}
         }
@@ -310,12 +318,30 @@ impl Service {
         let mut share_trie = self.share_trie.lock().await;
 
         let stream = Arc::clone(&self.write_stream);
-        share_trie.insert(sub_name, stream);
+
+        if let Some(node) = share_trie.get_mut(&sub_name) {
+            node.push(stream);
+        } else {
+            share_trie.insert(sub_name, vec![stream]);
+        }
     }
 
-    async fn pushlish(&mut self, sub_name: String, msg: &[u8]) {
+    // 发布消息
+    async fn pushlish(&mut self, sub_name: String, msg: BytesMut) {
         let mut share_trie = self.share_trie.lock().await;
+        let msg = Arc::new(msg);
 
-        
+        if let Some(node) = share_trie.get_mut(&sub_name) {
+            for stream in node.iter() {
+                let mut stream2 = Arc::clone(&stream);
+                let msg2 = Arc::clone(&msg);
+                spawn(async move {
+                    let mut stream2 = stream2.lock().await;
+                    if let Err(e) = stream2.write(&msg2).await {
+
+                    }
+                });
+            }
+        }
     }
 }
