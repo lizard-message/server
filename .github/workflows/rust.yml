@@ -10,6 +10,17 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+
+  deploy:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    needs: clippy
+    runs-on: ubuntu-latest
+   steps:
+    - name: Download artifacts
+     uses: actions/download-artifact@v2
+     with:
+       name: lizard_server_dep
+
   clippy:
 
     runs-on: ubuntu-latest
@@ -36,13 +47,3 @@ jobs:
         name: lizard_server_dep
         path: ./target/debug/deps
   
-#  deploy:
-#    if: github.event_name == 'push'
-#    needs: clippy
-#    runs-on: ubuntu-latest
-#   steps:
-#    - name: Download artifacts
-#     uses: actions/download-artifact@v2
-#     with:
-#       name: lizard_server_dep
-
