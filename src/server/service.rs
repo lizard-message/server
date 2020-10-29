@@ -11,6 +11,7 @@ use protocol::send_to_client::{
     encode::{Err, Ok, Ping, Pong, ServerConfig},
 };
 use protocol::state::Support;
+use radix_trie::Trie;
 use std::io::Error as IoError;
 use std::sync::{
   Arc,
@@ -19,13 +20,12 @@ use std::sync::{
       Ordering,
   }
 };
+use std::string::FromUtf8Error;
 use thiserror::Error;
 use tokio::fs::File;
 use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
-use radix_trie::Trie;
-use std::string::FromUtf8Error;
 use tokio::spawn;
 use bytes::BytesMut;
 
@@ -44,7 +44,7 @@ pub(super) enum Error {
     Decode(#[from] DecodeError),
 
     #[error("bytes convert to utf8 error `{0}`")]
-    Utf8(#[from] FromUtf8Error)
+    Utf8(#[from] FromUtf8Error),
 }
 
 #[derive(Debug)]
@@ -84,7 +84,11 @@ pub(super) struct Service {
 }
 
 impl Service {
-    async fn hand_shake(mut stream: TcpStream, decode: &mut Decode, share_trie: ArcShareTrie) -> Result<Self, Error> {
+    async fn hand_shake(
+        mut stream: TcpStream,
+        decode: &mut Decode,
+        share_trie: ArcShareTrie,
+    ) -> Result<Self, Error> {
         let client_config = CONFIG.get_client_config();
 
         let mut server_config = ServerConfig::default();
@@ -164,6 +168,9 @@ impl Service {
         }
     }
 
+    /**
+     *  选择使用tls还是普通的流
+     */
     async fn select_stream(
         stream: TcpStream,
         mask: &u16,
@@ -235,7 +242,11 @@ impl Service {
         }
     }
 
-    // 匹配消息, 然后做对应的动作
+    /**
+     *  匹配消息, 然后做对应的动作
+     *  短消息需要调用flush方法, 因为使用了BuffWrite, 有可能会缓存了一定的消息而没有发出去
+     *  特别是对于心跳的消息, 需要一定的实时
+     */
     async fn match_message(&mut self, message: Message) -> Result<(), Error> {
         debug!("message {:?}", message);
         match message {
