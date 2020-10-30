@@ -8,13 +8,14 @@ use futures::stream::StreamExt;
 use log::{debug, error};
 use protocol::send_to_client::{
     decode::{Decode, Error as DecodeError, Message},
-    encode::{Err, Ok, Ping, Pong, ServerConfig},
+    encode::{Err, Ok, Ping, Pong, ServerConfig, Msg},
 };
 use protocol::state::Support;
 use std::io::Error as IoError;
 use std::sync::{
   Arc,
   atomic::{
+      AtomicU64,
       AtomicPtr,
       Ordering,
   }
@@ -81,10 +82,11 @@ pub(super) struct Service {
     write_stream: ArcWriteStream,
     mode: Mode,
     share_trie: ArcShareTrie,
+    message_offset: Arc<AtomicU64>,
 }
 
 impl Service {
-    async fn hand_shake(mut stream: TcpStream, decode: &mut Decode, share_trie: ArcShareTrie) -> Result<Self, Error> {
+    async fn hand_shake(mut stream: TcpStream, decode: &mut Decode, share_trie: ArcShareTrie, message_offset: Arc<AtomicU64>) -> Result<Self, Error> {
         let client_config = CONFIG.get_client_config();
 
         let mut server_config = ServerConfig::default();
@@ -129,6 +131,7 @@ impl Service {
                                 write_stream: Arc::new(Mutex::new(write_stream)),
                                 mode,
                                 share_trie,
+                                message_offset,
                             });
                         } else {
                             return Err(Error::HandShake);
@@ -198,7 +201,7 @@ impl Service {
         }
     }
 
-    pub(super) async fn run(mut stream: TcpStream, share_trie: ArcShareTrie) {
+    pub(super) async fn run(mut stream: TcpStream, share_trie: ArcShareTrie, offset: Arc<AtomicU64>) {
         if let Err(e) = stream.set_nodelay(true) {
             error!("stream set nodelay error because {}", e);
         }
@@ -206,7 +209,7 @@ impl Service {
         let client_config = CONFIG.get_client_config();
         let mut decode = Decode::new(*client_config.get_max_message_length() as usize);
 
-        match Self::hand_shake(stream, &mut decode, share_trie).await {
+        match Self::hand_shake(stream, &mut decode, share_trie, offset).await {
             Ok(mut service) => 'main: loop {
                 match service.read_stream.read_buf(decode.get_mut_buffer()).await {
                     Ok(0) => break 'main,
