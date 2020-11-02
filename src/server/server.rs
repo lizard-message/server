@@ -1,15 +1,15 @@
 use super::service::Service;
 use crate::global_static::CONFIG;
 use log::{debug, error};
+use radix_trie::Trie;
 use std::io::Error as IoError;
 use std::net::{AddrParseError, SocketAddr};
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio::spawn;
-use std::sync::Arc;
 use tokio::sync::Mutex;
-use radix_trie::Trie;
-use std::sync::atomic::AtomicU64;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -34,12 +34,15 @@ impl Server {
 
         let mut listener = TcpListener::bind(SocketAddr::new(host.parse()?, *port)).await?;
 
-        
         loop {
             match listener.accept().await {
                 Ok((socket, addr)) => {
                     debug!("ip {:?} connect", addr);
-                    spawn(Service::run(socket, Arc::clone(&share_trie), Arc::clone(&offset)));
+                    spawn(Service::run(
+                        socket,
+                        Arc::clone(&share_trie),
+                        Arc::clone(&offset),
+                    ));
                 }
                 Err(e) => {
                     error!("tcp listen accept error {:?}", e);
