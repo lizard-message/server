@@ -9,6 +9,7 @@ use tokio::spawn;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use radix_trie::Trie;
+use std::sync::atomic::AtomicU64;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -29,14 +30,16 @@ impl Server {
         let port = client.get_port();
 
         let share_trie = Arc::new(Mutex::new(Trie::new()));
+        let offset = Arc::new(AtomicU64::new(0));
 
         let mut listener = TcpListener::bind(SocketAddr::new(host.parse()?, *port)).await?;
 
+        
         loop {
             match listener.accept().await {
                 Ok((socket, addr)) => {
                     debug!("ip {:?} connect", addr);
-                    spawn(Service::run(socket, Arc::clone(&share_trie)));
+                    spawn(Service::run(socket, Arc::clone(&share_trie), Arc::clone(&offset)));
                 }
                 Err(e) => {
                     error!("tcp listen accept error {:?}", e);
