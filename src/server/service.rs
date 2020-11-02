@@ -256,7 +256,7 @@ impl Service {
             }
             Message::Sub(sub) => {
                 let sub_name = String::from_utf8(sub.name.to_vec())?;
-                self.add_subscribe(sub_name, sub.reply).await;
+                self.add_subscribe(sub_name).await;
             }
             Message::Pub(r#pub) => {
                 let sub_name = String::from_utf8(r#pub.name.to_vec())?;
@@ -317,7 +317,7 @@ impl Service {
 
     // 添加订阅
     // 暂时只能使用完整的匹配语句, 没有做匹配规则
-    async fn add_subscribe(&mut self, sub_name: String, reply: bool) {
+    async fn add_subscribe(&mut self, sub_name: String) {
         let mut share_trie = self.share_trie.lock().await;
 
         let stream = Arc::clone(&self.write_stream);
