@@ -3,32 +3,28 @@ use super::write_stream::{StreamType as WriteStreamType, WriteStream};
 use crate::config::Client;
 use crate::global_static::CONFIG;
 use async_native_tls::{accept, AcceptError};
+use bytes::BytesMut;
 use futures::future::FusedFuture;
 use futures::stream::StreamExt;
 use log::{debug, error};
 use protocol::send_to_client::{
     decode::{Decode, Error as DecodeError, Message},
-    encode::{Err, Ok, Ping, Pong, ServerConfig, Msg},
+    encode::{Err, Msg, Ok, Ping, Pong, ServerConfig},
 };
 use protocol::state::Support;
+use radix_trie::Trie;
 use std::io::Error as IoError;
+use std::string::FromUtf8Error;
 use std::sync::{
-  Arc,
-  atomic::{
-      AtomicU64,
-      AtomicPtr,
-      Ordering,
-  }
+    atomic::{AtomicPtr, AtomicU64, Ordering},
+    Arc,
 };
 use thiserror::Error;
 use tokio::fs::File;
 use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::Mutex;
-use radix_trie::Trie;
-use std::string::FromUtf8Error;
 use tokio::spawn;
-use bytes::BytesMut;
+use tokio::sync::Mutex;
 
 #[derive(Debug, Error)]
 pub(super) enum Error {
@@ -45,7 +41,7 @@ pub(super) enum Error {
     Decode(#[from] DecodeError),
 
     #[error("bytes convert to utf8 error `{0}`")]
-    Utf8(#[from] FromUtf8Error)
+    Utf8(#[from] FromUtf8Error),
 }
 
 #[derive(Debug)]
@@ -86,7 +82,12 @@ pub(super) struct Service {
 }
 
 impl Service {
-    async fn hand_shake(mut stream: TcpStream, decode: &mut Decode, share_trie: ArcShareTrie, message_offset: Arc<AtomicU64>) -> Result<Self, Error> {
+    async fn hand_shake(
+        mut stream: TcpStream,
+        decode: &mut Decode,
+        share_trie: ArcShareTrie,
+        message_offset: Arc<AtomicU64>,
+    ) -> Result<Self, Error> {
         let client_config = CONFIG.get_client_config();
 
         let mut server_config = ServerConfig::default();
@@ -119,8 +120,7 @@ impl Service {
                 Ok(_) => {
                     if let Some(result) = decode.iter().next() {
                         let message = result?;
-                        if let Message::Info(info) = message
-                        {
+                        if let Message::Info(info) = message {
                             let mode = Self::select_mode(&info.support, &client_config)?;
 
                             let (read_stream, write_stream) =
@@ -201,7 +201,11 @@ impl Service {
         }
     }
 
-    pub(super) async fn run(mut stream: TcpStream, share_trie: ArcShareTrie, offset: Arc<AtomicU64>) {
+    pub(super) async fn run(
+        mut stream: TcpStream,
+        share_trie: ArcShareTrie,
+        offset: Arc<AtomicU64>,
+    ) {
         if let Err(e) = stream.set_nodelay(true) {
             error!("stream set nodelay error because {}", e);
         }
@@ -340,9 +344,7 @@ impl Service {
                 let msg2 = Arc::clone(&msg);
                 spawn(async move {
                     let mut stream2 = stream2.lock().await;
-                    if let Err(e) = stream2.write(&msg2).await {
-
-                    }
+                    if let Err(e) = stream2.write(&msg2).await {}
                 });
             }
         }
