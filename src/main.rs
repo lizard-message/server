@@ -1,9 +1,10 @@
 use lizard::{Error, Server};
-use pretty_env_logger::init;
+// use pretty_env_logger::init;
+use tracing_subscriber::fmt;
 
 #[tokio::main]
 async fn main() {
-    init();
+    fmt::init();
 
-    Server::run().await;
+    Server::run().await.unwrap();
 }

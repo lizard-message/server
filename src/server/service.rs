@@ -16,15 +16,18 @@ use radix_trie::Trie;
 use std::io::Error as IoError;
 use std::string::FromUtf8Error;
 use std::sync::{
-    atomic::{AtomicPtr, AtomicU64, Ordering},
+    atomic::{AtomicU64, Ordering},
     Arc,
 };
+use std::time::Duration;
 use thiserror::Error;
 use tokio::fs::File;
 use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::Mutex;
+use tokio::select;
 use tokio::spawn;
+use tokio::sync::Mutex;
+use tokio::time::interval;
 
 #[derive(Debug, Error)]
 pub(super) enum Error {
@@ -215,27 +218,38 @@ impl Service {
 
         let client_config = CONFIG.get_client_config();
         let mut decode = Decode::new(*client_config.get_max_message_length() as usize);
+        let mut interval = interval(Duration::from_millis(50));
 
         match Self::hand_shake(stream, &mut decode, share_trie, offset).await {
             Ok(mut service) => 'main: loop {
-                match service.read_stream.read_buf(decode.get_mut_buffer()).await {
-                    Ok(0) => break 'main,
-                    Ok(_) => {
-                        for result in decode.iter() {
-                            match result {
-                                Ok(message) => {
-                                    if let Err(e) = service.match_message(message).await {
-                                        error!("{:?}", e);
-                                    }
-                                }
-                                Err(e) => {
-                                    error!("parse error {:?}", e);
-                                }
-                            }
+                select! {
+                    result = service.read_stream.read_buf(decode.get_mut_buffer()) => {
+                        match result {
+                          Ok(0) => break 'main,
+                          Ok(_) => {
+                              for result in decode.iter() {
+                                  match result {
+                                      Ok(message) => {
+                                          if let Err(e) = service.match_message(message).await {
+                                              error!("{:?}", e);
+                                          }
+                                      }
+                                      Err(e) => {
+                                          error!("parse error {:?}", e);
+                                      }
+                                  }
+                              }
+                          }
+                          Err(e) => {
+                              error!("read buff error {:?}", e);
+                          }
+                       }
+                    },
+                    _ = interval.tick() => {
+                        let mut stream = service.write_stream.lock().await;
+                        if let Err(e) = stream.flush().await {
+                            error!("flush error {:?}", e);
                         }
-                    }
-                    Err(e) => {
-                        error!("read buff error {:?}", e);
                     }
                 }
             },
@@ -343,7 +357,14 @@ impl Service {
     // 发布消息
     async fn pushlish(&mut self, sub_name: String, msg: BytesMut) {
         let mut share_trie = self.share_trie.lock().await;
-        let msg = Arc::new(msg);
+        let msg = Arc::new(
+            Msg::new(
+                self.message_offset.load(Ordering::Acquire),
+                sub_name.as_bytes(),
+                &msg,
+            )
+            .encode(),
+        );
 
         if let Some(node) = share_trie.get_mut(&sub_name) {
             for stream in node.iter() {
