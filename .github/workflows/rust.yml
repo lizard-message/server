@@ -11,41 +11,15 @@ env:
 
 jobs:
 
-  deploy:
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
-    needs: clippy
-    runs-on: ubuntu-latest
-  
-    steps:
-    - name: Download artifacts
-      uses: actions/download-artifact@v2
-      with:
-       name: lizard_server_dep
-
   clippy:
-
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout repository  
       uses: actions/checkout@v2
-    
-    # 先下载缓存依赖
-    - name: Download artifacts
-      uses: actions/download-artifact@v2
-      with:
-        name: lizard_server_dep
-
 
     # 跑检查
     - name: Run clippy
       run: cargo clippy
 
-    # 缓存依赖
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v2
-      with:
-        name: lizard_server_dep
-        path: ./target/debug/deps
-        retention-days: 3 
   
