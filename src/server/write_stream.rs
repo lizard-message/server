@@ -59,7 +59,12 @@ impl AsyncWrite for WriteStream {
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context) -> Poll<IoResult<()>> {
-        Pin::new(&mut self.get_mut().stream).poll_flush(cx)
+        let me = self.get_mut();
+        if !me.stream.buffer().is_empty() {
+            Pin::new(&mut me.stream).poll_flush(cx)
+        } else {
+            Poll::Ready(Ok(()))
+        }
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context) -> Poll<IoResult<()>> {
