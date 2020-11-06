@@ -4,16 +4,16 @@ use crate::config::Client;
 use crate::global_static::CONFIG;
 use async_native_tls::{accept, AcceptError};
 use bytes::BytesMut;
-use futures::future::FusedFuture;
-use futures::stream::StreamExt;
-use log::{debug, error};
+use log::{debug, error, trace};
 use protocol::send_to_client::{
     decode::{Decode, Error as DecodeError, Message},
     encode::{Err, Msg, Ok, Ping, Pong, ServerConfig},
 };
 use protocol::state::Support;
 use radix_trie::Trie;
+use std::collections::HashMap;
 use std::io::Error as IoError;
+use std::ops::Drop;
 use std::string::FromUtf8Error;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -26,8 +26,27 @@ use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::select;
 use tokio::spawn;
+use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::sync::Mutex;
-use tokio::time::interval;
+use tokio::time::{interval, Instant};
+
+#[cfg(unix)]
+use std::os::unix::io::RawFd;
+
+#[cfg(unix)]
+use std::os::unix::io::AsRawFd;
+
+#[cfg(windows)]
+use std::os::windows::io::RawSocket;
+
+#[cfg(windows)]
+use std::os::windows::io::AsRawSocket;
+
+#[cfg(unix)]
+type Fd = RawFd;
+
+#[cfg(windows)]
+type Fd = RawSocket;
 
 #[derive(Debug, Error)]
 pub(super) enum Error {
@@ -72,16 +91,20 @@ impl Mode {
     }
 }
 
-type ArcWriteStream = Arc<Mutex<WriteStream>>;
-type ArcShareTrie = Arc<Mutex<Trie<String, Vec<ArcWriteStream>>>>;
+type ArcSender = Sender<Arc<BytesMut>>;
+type ArcShareTrie = Arc<Mutex<Trie<String, HashMap<Fd, ArcSender>>>>;
 
 #[derive(Debug)]
 pub(super) struct Service {
     read_stream: ReadStream,
-    write_stream: ArcWriteStream,
+    write_stream: WriteStream,
     mode: Mode,
     share_trie: ArcShareTrie,
     message_offset: Arc<AtomicU64>,
+    sender: ArcSender,
+    receiver: Receiver<Arc<BytesMut>>,
+    sub_name_list: Vec<String>,
+    file_descriptior: Fd,
 }
 
 impl Service {
@@ -91,6 +114,7 @@ impl Service {
         share_trie: ArcShareTrie,
         message_offset: Arc<AtomicU64>,
     ) -> Result<Self, Error> {
+        stream.set_nodelay(false)?;
         let client_config = CONFIG.get_client_config();
 
         let mut server_config = ServerConfig::default();
@@ -126,15 +150,27 @@ impl Service {
                         if let Message::Info(info) = message {
                             let mode = Self::select_mode(&info.support, &client_config)?;
 
+                            #[cfg(unix)]
+                            let file_descriptior = stream.as_raw_fd();
+
+                            #[cfg(windows)]
+                            let file_descriptior = stream.as_raw_socket();
+
                             let (read_stream, write_stream) =
                                 Self::select_stream(stream, &info.support, &client_config).await?;
 
+                            let (sender, receiver) = channel(64);
+
                             return Ok(Self {
                                 read_stream,
-                                write_stream: Arc::new(Mutex::new(write_stream)),
+                                write_stream,
                                 mode,
                                 share_trie,
                                 message_offset,
+                                sender,
+                                receiver,
+                                sub_name_list: Vec::new(),
+                                file_descriptior,
                             });
                         } else {
                             return Err(Error::HandShake);
@@ -218,7 +254,7 @@ impl Service {
 
         let client_config = CONFIG.get_client_config();
         let mut decode = Decode::new(*client_config.get_max_message_length() as usize);
-        let mut interval = interval(Duration::from_millis(50));
+        let mut interval = interval(Duration::from_millis(500));
 
         match Self::hand_shake(stream, &mut decode, share_trie, offset).await {
             Ok(mut service) => 'main: loop {
@@ -227,6 +263,8 @@ impl Service {
                         match result {
                           Ok(0) => break 'main,
                           Ok(_) => {
+                              let start_line = line!();
+                              let start_time = Instant::now();
                               for result in decode.iter() {
                                   match result {
                                       Ok(message) => {
@@ -239,6 +277,7 @@ impl Service {
                                       }
                                   }
                               }
+                              trace!("范围 {}-{} 耗时 {:?}", start_line, line!(),Instant::now().duration_since(start_time));
                           }
                           Err(e) => {
                               error!("read buff error {:?}", e);
@@ -246,10 +285,18 @@ impl Service {
                        }
                     },
                     _ = interval.tick() => {
-                        let mut stream = service.write_stream.lock().await;
-                        if let Err(e) = stream.flush().await {
+                        if let Err(e) = service.write_stream.flush().await {
                             error!("flush error {:?}", e);
                         }
+                    }
+                    msg_option = service.receiver.recv() => {
+                        let start_line = line!();
+                        let start_time = Instant::now();
+                        let msg = msg_option.unwrap();
+                        if let Err(e) = service.write_stream.write(&msg).await {
+                            error!("publish msg error {:?}", e);
+                        }
+                        trace!("范围 {}-{} 耗时 {:?}", start_line, line!(),Instant::now().duration_since(start_time));
                     }
                 }
             },
@@ -294,69 +341,73 @@ impl Service {
 
     // 发送pong消息
     async fn send_pong(&mut self) -> Result<(), IoError> {
-        let mut stream = self.write_stream.lock().await;
-        stream.write(Pong::encode()).await?;
-        stream.flush().await?;
+        self.write_stream.write(Pong::encode()).await?;
+        self.write_stream.flush().await?;
         Ok(())
     }
 
     // 发送ping消息
     async fn send_ping(&mut self) -> Result<(), IoError> {
-        let mut stream = self.write_stream.lock().await;
-        stream.write(Ping::encode()).await?;
-        stream.flush().await?;
+        self.write_stream.write(Ping::encode()).await?;
+        self.write_stream.flush().await?;
         Ok(())
     }
 
     // 发送转换pull消息
     async fn send_turn_pull(&mut self) -> Result<(), IoError> {
-        let mut stream = self.write_stream.lock().await;
         if self.mode.can_pull() {
-            stream.write(Ok::encode()).await?;
+            self.write_stream.write(Ok::encode()).await?;
         } else {
-            stream
+            self.write_stream
                 .write(&(Err::new("server not support pull").encode()))
                 .await?;
         }
 
         // 立刻发送
-        stream.flush().await?;
+        self.write_stream.flush().await?;
         Ok(())
     }
 
     //发送转换push消息
     async fn send_turn_push(&mut self) -> Result<(), IoError> {
-        let mut stream = self.write_stream.lock().await;
         if self.mode.can_push() {
-            stream.write(Ok::encode()).await?;
+            self.write_stream.write(Ok::encode()).await?;
         } else {
-            stream
+            self.write_stream
                 .write(&(Err::new("server not support push").encode()))
                 .await?;
         }
 
         // 立刻发送
-        stream.flush().await?;
+        self.write_stream.flush().await?;
         Ok(())
     }
 
     // 添加订阅
     // 暂时只能使用完整的匹配语句, 没有做匹配规则
     async fn add_subscribe(&mut self, sub_name: String) {
+        let start_line = line!();
+        let start_time = Instant::now();
+        self.sub_name_list.push(sub_name.clone());
         let mut share_trie = self.share_trie.lock().await;
-
-        let stream = Arc::clone(&self.write_stream);
-
         if let Some(node) = share_trie.get_mut(&sub_name) {
-            node.push(stream);
+            debug!("share_trie push stream");
+            node.insert(self.file_descriptior, self.sender.clone());
         } else {
-            share_trie.insert(sub_name, vec![stream]);
+            debug!("share_tire insert vec");
+            let mut hm = HashMap::new();
+            hm.insert(self.file_descriptior, self.sender.clone());
+            share_trie.insert(sub_name, hm);
         }
+        trace!("范围 {}-{} 耗时 {:?}", start_line, line!(),Instant::now().duration_since(start_time));
     }
 
     // 发布消息
     async fn pushlish(&mut self, sub_name: String, msg: BytesMut) {
+        let start_line = line!();
+        let start_time = Instant::now();
         let mut share_trie = self.share_trie.lock().await;
+        trace!("范围 {}-{} 耗时 {:?}", start_line, line!(),Instant::now().duration_since(start_time));
         let msg = Arc::new(
             Msg::new(
                 self.message_offset.load(Ordering::Acquire),
@@ -366,15 +417,43 @@ impl Service {
             .encode(),
         );
 
+        let start_line = line!();
+        let start_time = Instant::now();
+        // 根据订阅名称获取订阅树上面的socket
+        // 然后做并行发送消息
         if let Some(node) = share_trie.get_mut(&sub_name) {
-            for stream in node.iter() {
-                let mut stream2 = Arc::clone(&stream);
+            debug!("node {:?}", node);
+
+            for sender in node.values() {
                 let msg2 = Arc::clone(&msg);
+                let mut sender2 = sender.clone();
+
                 spawn(async move {
-                    let mut stream2 = stream2.lock().await;
-                    if let Err(e) = stream2.write(&msg2).await {}
+                    if let Err(_) = sender2.send(msg2).await {
+                        error!("resource leak out, line on {}", line!());
+                    }
                 });
             }
         }
+        trace!("范围 {}-{} 耗时 {:?}", start_line, line!(),Instant::now().duration_since(start_time));
+    }
+}
+
+impl Drop for Service {
+    fn drop(&mut self) {
+        let start_line = line!();
+        let start_time = Instant::now();
+        // 删除挂载在前缀树上面的sender
+        loop {
+            if let Ok(mut share_trie) = self.share_trie.try_lock() {
+                self.sub_name_list.iter().for_each(|sub_name| {
+                    if let Some(node) = share_trie.get_mut(sub_name) {
+                        node.remove(&self.file_descriptior);
+                    }
+                });
+                break;
+            }
+        }
+        trace!("范围 {}-{} 耗时 {:?}", start_line, line!(),Instant::now().duration_since(start_time));
     }
 }
