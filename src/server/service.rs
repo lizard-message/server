@@ -11,7 +11,7 @@ use protocol::send_to_client::{
 };
 use protocol::state::Support;
 use radix_trie::Trie;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Error as IoError;
 use std::ops::Drop;
 use std::string::FromUtf8Error;
@@ -103,7 +103,7 @@ pub(super) struct Service {
     message_offset: Arc<AtomicU64>,
     sender: ArcSender,
     receiver: Receiver<Arc<BytesMut>>,
-    sub_name_list: Vec<String>,
+    sub_name_list: HashSet<String>,
     file_descriptior: Fd,
 }
 
@@ -169,7 +169,7 @@ impl Service {
                                 message_offset,
                                 sender,
                                 receiver,
-                                sub_name_list: Vec::new(),
+                                sub_name_list: HashSet::new(),
                                 file_descriptior,
                             });
                         } else {
@@ -334,6 +334,10 @@ impl Service {
                 let sub_name = String::from_utf8(r#pub.name.to_vec())?;
                 self.pushlish(sub_name, r#pub.msg).await;
             }
+            Message::UnSub(unsub) => {
+                let sub_name = String::from_utf8(unsub.name.to_vec())?;
+                self.unsub(sub_name).await;
+            }
             _ => {}
         }
         Ok(())
@@ -388,7 +392,7 @@ impl Service {
     async fn add_subscribe(&mut self, sub_name: String) {
         let start_line = line!();
         let start_time = Instant::now();
-        self.sub_name_list.push(sub_name.clone());
+        self.sub_name_list.insert(sub_name.clone());
         let mut share_trie = self.share_trie.lock().await;
         if let Some(node) = share_trie.get_mut(&sub_name) {
             debug!("share_trie push stream");
@@ -429,13 +433,23 @@ impl Service {
                 let mut sender2 = sender.clone();
 
                 spawn(async move {
-                    if let Err(_) = sender2.send(msg2).await {
+                    if sender2.send(msg2).await.is_err() {
                         error!("resource leak out, line on {}", line!());
                     }
                 });
             }
         }
         trace!("范围 {}-{} 耗时 {:?}", start_line, line!(),Instant::now().duration_since(start_time));
+    }
+
+    // 取消订阅
+    async fn unsub(&mut self, sub_name: String) {
+        let mut share_trie = self.share_trie.lock().await;
+
+        if let Some(node) = share_trie.get_mut(&sub_name) {
+            node.remove(&self.file_descriptior);
+        }
+        self.sub_name_list.remove(&sub_name);
     }
 }
 
