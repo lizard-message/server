@@ -24,6 +24,7 @@ use thiserror::Error;
 use tokio::fs::File;
 use tokio::io::{split, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::runtime::Handle;
 use tokio::select;
 use tokio::spawn;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
@@ -403,7 +404,12 @@ impl Service {
             hm.insert(self.file_descriptior, self.sender.clone());
             share_trie.insert(sub_name, hm);
         }
-        trace!("范围 {}-{} 耗时 {:?}", start_line, line!(),Instant::now().duration_since(start_time));
+        trace!(
+            "范围 {}-{} 耗时 {:?}",
+            start_line,
+            line!(),
+            Instant::now().duration_since(start_time)
+        );
     }
 
     // 发布消息
@@ -411,7 +417,12 @@ impl Service {
         let start_line = line!();
         let start_time = Instant::now();
         let mut share_trie = self.share_trie.lock().await;
-        trace!("范围 {}-{} 耗时 {:?}", start_line, line!(),Instant::now().duration_since(start_time));
+        trace!(
+            "范围 {}-{} 耗时 {:?}",
+            start_line,
+            line!(),
+            Instant::now().duration_since(start_time)
+        );
         let msg = Arc::new(
             Msg::new(
                 self.message_offset.load(Ordering::Acquire),
@@ -439,7 +450,12 @@ impl Service {
                 });
             }
         }
-        trace!("范围 {}-{} 耗时 {:?}", start_line, line!(),Instant::now().duration_since(start_time));
+        trace!(
+            "范围 {}-{} 耗时 {:?}",
+            start_line,
+            line!(),
+            Instant::now().duration_since(start_time)
+        );
     }
 
     // 取消订阅
@@ -457,17 +473,24 @@ impl Drop for Service {
     fn drop(&mut self) {
         let start_line = line!();
         let start_time = Instant::now();
-        // 删除挂载在前缀树上面的sender
-        loop {
-            if let Ok(mut share_trie) = self.share_trie.try_lock() {
-                self.sub_name_list.iter().for_each(|sub_name| {
-                    if let Some(node) = share_trie.get_mut(sub_name) {
-                        node.remove(&self.file_descriptior);
-                    }
-                });
-                break;
-            }
-        }
-        trace!("范围 {}-{} 耗时 {:?}", start_line, line!(),Instant::now().duration_since(start_time));
+
+        let handle = Handle::current();
+
+        handle.block_on(async {
+            // 删除挂载在前缀树上面的ArcSender
+            let mut share_trie = self.share_trie.lock().await;
+            self.sub_name_list.iter().for_each(|sub_name| {
+                if let Some(node) = share_trie.get_mut(sub_name) {
+                    node.remove(&self.file_descriptior);
+                }
+            });
+        });
+
+        trace!(
+            "范围 {}-{} 耗时 {:?}",
+            start_line,
+            line!(),
+            Instant::now().duration_since(start_time)
+        );
     }
 }
