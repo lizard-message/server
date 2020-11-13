@@ -10,8 +10,8 @@ use protocol::send_to_client::{
     encode::{Err, Msg, Ok, Ping, Pong, ServerConfig},
 };
 use protocol::state::Support;
-use radix_trie::Trie;
-use std::collections::{HashMap, HashSet};
+use radix_trie::{Trie, TrieCommon};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Error as IoError;
 use std::ops::Drop;
 use std::string::FromUtf8Error;
@@ -93,7 +93,7 @@ impl Mode {
 }
 
 type ArcSender = Sender<Arc<BytesMut>>;
-type ArcShareTrie = Arc<Mutex<Trie<String, HashMap<Fd, ArcSender>>>>;
+type ArcShareTrie = Arc<Mutex<Trie<Vec<u8>, BTreeMap<Fd, ArcSender>>>>;
 
 #[derive(Debug)]
 pub(super) struct Service {
@@ -104,7 +104,7 @@ pub(super) struct Service {
     message_offset: Arc<AtomicU64>,
     sender: ArcSender,
     receiver: Receiver<Arc<BytesMut>>,
-    sub_name_list: HashSet<String>,
+    sub_name_list: BTreeSet<Vec<u8>>,
     file_descriptior: Fd,
 }
 
@@ -170,7 +170,7 @@ impl Service {
                                 message_offset,
                                 sender,
                                 receiver,
-                                sub_name_list: HashSet::new(),
+                                sub_name_list: BTreeSet::new(),
                                 file_descriptior,
                             });
                         } else {
@@ -262,7 +262,10 @@ impl Service {
                 select! {
                     result = service.read_stream.read_buf(decode.get_mut_buffer()) => {
                         match result {
-                          Ok(0) => break 'main,
+                          Ok(0) => {
+                            service.shutdown().await;
+                            break 'main;
+                          },
                           Ok(_) => {
                               let start_line = line!();
                               let start_time = Instant::now();
@@ -313,7 +316,6 @@ impl Service {
      *  特别是对于心跳的消息, 需要一定的实时
      */
     async fn match_message(&mut self, message: Message) -> Result<(), Error> {
-        debug!("message {:?}", message);
         match message {
             Message::Ping => {
                 self.send_pong().await?;
@@ -328,16 +330,20 @@ impl Service {
                 self.send_turn_push().await?;
             }
             Message::Sub(sub) => {
-                let sub_name = String::from_utf8(sub.name.to_vec())?;
+                let sub_name = sub.name.to_vec();
                 self.add_subscribe(sub_name).await;
             }
             Message::Pub(r#pub) => {
-                let sub_name = String::from_utf8(r#pub.name.to_vec())?;
+                let sub_name = r#pub.name.to_vec();
                 self.pushlish(sub_name, r#pub.msg).await;
             }
             Message::UnSub(unsub) => {
-                let sub_name = String::from_utf8(unsub.name.to_vec())?;
-                self.unsub(sub_name).await;
+                let unsub_name_list = unsub
+                    .name_list
+                    .into_iter()
+                    .map(|item| item.to_vec())
+                    .collect();
+                self.unsub(unsub_name_list).await;
             }
             _ => {}
         }
@@ -390,17 +396,15 @@ impl Service {
 
     // 添加订阅
     // 暂时只能使用完整的匹配语句, 没有做匹配规则
-    async fn add_subscribe(&mut self, sub_name: String) {
+    async fn add_subscribe(&mut self, sub_name: Vec<u8>) {
         let start_line = line!();
         let start_time = Instant::now();
         self.sub_name_list.insert(sub_name.clone());
         let mut share_trie = self.share_trie.lock().await;
         if let Some(node) = share_trie.get_mut(&sub_name) {
-            debug!("share_trie push stream");
             node.insert(self.file_descriptior, self.sender.clone());
         } else {
-            debug!("share_tire insert vec");
-            let mut hm = HashMap::new();
+            let mut hm = BTreeMap::new();
             hm.insert(self.file_descriptior, self.sender.clone());
             share_trie.insert(sub_name, hm);
         }
@@ -413,7 +417,7 @@ impl Service {
     }
 
     // 发布消息
-    async fn pushlish(&mut self, sub_name: String, msg: BytesMut) {
+    async fn pushlish(&mut self, sub_name: Vec<u8>, msg: BytesMut) {
         let start_line = line!();
         let start_time = Instant::now();
         let mut share_trie = self.share_trie.lock().await;
@@ -426,7 +430,7 @@ impl Service {
         let msg = Arc::new(
             Msg::new(
                 self.message_offset.load(Ordering::Acquire),
-                sub_name.as_bytes(),
+                sub_name.as_slice(),
                 &msg,
             )
             .encode(),
@@ -436,9 +440,7 @@ impl Service {
         let start_time = Instant::now();
         // 根据订阅名称获取订阅树上面的socket
         // 然后做并行发送消息
-        if let Some(node) = share_trie.get_mut(&sub_name) {
-            debug!("node {:?}", node);
-
+        if let Some(node) = share_trie.get_mut(sub_name.as_slice()) {
             for sender in node.values() {
                 let msg2 = Arc::clone(&msg);
                 let mut sender2 = sender.clone();
@@ -459,38 +461,38 @@ impl Service {
     }
 
     // 取消订阅
-    async fn unsub(&mut self, sub_name: String) {
+    async fn unsub(&mut self, sub_name_list: Vec<Vec<u8>>) {
+        let file_descriptior = &self.file_descriptior;
+        let self_sub_name_list = &mut self.sub_name_list;
+
         let mut share_trie = self.share_trie.lock().await;
 
-        if let Some(node) = share_trie.get_mut(&sub_name) {
-            node.remove(&self.file_descriptior);
-        }
-        self.sub_name_list.remove(&sub_name);
-    }
-}
-
-impl Drop for Service {
-    fn drop(&mut self) {
-        let start_line = line!();
-        let start_time = Instant::now();
-
-        let handle = Handle::current();
-
-        handle.block_on(async {
-            // 删除挂载在前缀树上面的ArcSender
-            let mut share_trie = self.share_trie.lock().await;
-            self.sub_name_list.iter().for_each(|sub_name| {
-                if let Some(node) = share_trie.get_mut(sub_name) {
-                    node.remove(&self.file_descriptior);
-                }
-            });
+        sub_name_list.iter().for_each(|sub_name| {
+            if let Some(node) = share_trie.get_mut(sub_name) {
+                node.remove(file_descriptior);
+                self_sub_name_list.remove(sub_name);
+            }
         });
+    }
 
-        trace!(
-            "范围 {}-{} 耗时 {:?}",
-            start_line,
-            line!(),
-            Instant::now().duration_since(start_time)
-        );
+    async fn shutdown(mut self) {
+        let file_descriptior = &self.file_descriptior;
+        let sub_name_list = &mut self.sub_name_list;
+        let receiver = &mut self.receiver;
+
+        {
+        let mut share_trie = self.share_trie.lock().await;
+
+        sub_name_list.iter().for_each(|sub_name| {
+            if let Some(node) = share_trie.get_mut(sub_name) {
+                node.remove(file_descriptior);
+            }
+        });
+        share_trie.values().for_each(|item| {
+            debug!("share_trie entry size {:?}", item.len());
+        });
+        }
+//        receiver.close();
+        // debug!("share_trie strong count {:?} weak count {:?}", Arc::strong_count(&self.share_trie), Arc::weak_count(&self.share_trie));
     }
 }
