@@ -31,13 +31,15 @@ impl AsyncRead for StreamType {
 
 #[derive(Debug)]
 pub(super) struct ReadStream {
-    stream: BufReader<StreamType>,
+//    stream: BufReader<StreamType>,
+    stream: StreamType,
 }
 
 impl ReadStream {
     pub(super) fn new(stream: StreamType) -> Self {
         Self {
-            stream: BufReader::new(stream),
+//            stream: BufReader::new(stream),
+            stream,
         }
     }
 }
